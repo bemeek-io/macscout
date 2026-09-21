@@ -116,7 +116,76 @@ func Open(path string) (*Store, error) {
 		// A duplicate-column error just means this database already has it.
 		_, _ = db.Exec(m)
 	}
-	return &Store{db: db}, nil
+	st := &Store{db: db}
+	if err := st.redateOnce(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("repair availability: %w", err)
+	}
+	return st, nil
+}
+
+// redateVersion marks databases whose availability rows have been re-dated
+// from their own quotes (see apple.Redate).
+const redateVersion = 1
+
+// redateOnce repairs rows saved before each part was dated from its own
+// quote. It runs once per database and needs nothing from apple.com.
+func (s *Store) redateOnce() error {
+	var version int
+	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	if version >= redateVersion {
+		return nil
+	}
+
+	type fix struct {
+		part, store string
+		status      apple.Status
+		days        int
+	}
+	rows, err := s.db.Query(`SELECT part, store_number, status, quote, observed_at FROM availability`)
+	if err != nil {
+		return err
+	}
+	var fixes []fix
+	for rows.Next() {
+		var (
+			f        fix
+			status   string
+			quote    string
+			observed int64
+		)
+		if err := rows.Scan(&f.part, &f.store, &status, &quote, &observed); err != nil {
+			rows.Close()
+			return err
+		}
+		next, days, changed := apple.Redate(apple.Status(status), quote, time.Unix(observed, 0))
+		if changed {
+			f.status, f.days = next, days
+			fixes = append(fixes, f)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, f := range fixes {
+		if _, err := tx.Exec(`UPDATE availability SET status = ?, days_out = ? WHERE part = ? AND store_number = ?`,
+			string(f.status), f.days, f.part, f.store); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, redateVersion)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Close() error { return s.db.Close() }

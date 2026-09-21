@@ -275,9 +275,16 @@ export default function MapView({ stores, heatmap, selected, onSelect, flyTo, fi
         ...style,
       }).addTo(m);
 
+      // Look the store up at click time rather than capturing it here. A
+      // marker outlives the data it was created from — changing product or a
+      // background refresh restyles it in place — so a captured store would
+      // show the status from whenever the marker was first drawn, while the dot
+      // shows the current one.
+      const storeNumber = s.storeNumber;
       dot.on("click", (e) => {
         L.DomEvent.stopPropagation(e);
-        onSelectRef.current(s);
+        const current = storesRef.current.find((x) => x.storeNumber === storeNumber);
+        if (current) onSelectRef.current(current);
       });
       dot.on("mouseover", () => (m.getContainer().style.cursor = "pointer"));
       dot.on("mouseout", () => (m.getContainer().style.cursor = ""));

@@ -105,18 +105,19 @@ func (c *Client) Pickup(ctx context.Context, parts []string, location string) (m
 		if addr == "" {
 			addr = s.Address.Address
 		}
-		days := daysUntil(s.PickupEncodedUpperDateString, "", today)
+		// The encoded date is per store, not per part: with several parts in
+		// one request it describes only one of them, so every part is dated
+		// from its own quote and the store date is a last resort.
+		storeDays := daysUntil(s.PickupEncodedUpperDateString, "", today)
 
 		for _, part := range parts {
 			pa, ok := s.PartsAvailability[part]
 			if !ok {
 				continue
 			}
-			// The encoded date is per store, but the quote is per part, so a
-			// part with no date of its own falls back to parsing its quote.
-			partDays := days
-			if partDays < 0 {
-				partDays = daysUntil("", pa.PickupSearchQuote, today)
+			partDays := daysUntil("", pa.PickupSearchQuote, today)
+			if partDays < 0 && len(parts) == 1 {
+				partDays = storeDays
 			}
 			out[part] = append(out[part], StoreAvailability{
 				StoreNumber: s.StoreNumber,
@@ -162,6 +163,24 @@ func classify(display string, days int) Status {
 	}
 }
 
+// Redate re-derives a stored observation's status from its own quote, as
+// seen on the day it was observed. It repairs rows saved while parts were
+// dated from the store-wide pickup date, which in a multi-part request belongs
+// to just one of them. Only rows that must have been ships-to-store change:
+// in-stock rows quoted for today or tomorrow, unavailable rows and unparseable
+// quotes are left alone.
+func Redate(status Status, quote string, observed time.Time) (Status, int, bool) {
+	if status == StatusUnavailable {
+		return status, 0, false
+	}
+	days := daysUntil("", quote, observed)
+	if days < 0 || (status == StatusInStock && days <= 1) {
+		return status, days, false
+	}
+	next := classify("ships-to-store", days)
+	return next, days, true
+}
+
 var quoteDateRe = regexp.MustCompile(`([A-Z][a-z]{2})\s+(\d{1,2})`)
 
 // daysUntil prefers Apple's encoded YYYYMMDD field and falls back to parsing
@@ -172,8 +191,12 @@ func daysUntil(encoded, quote string, now time.Time) int {
 			return diffDays(now, t)
 		}
 	}
-	if strings.Contains(strings.ToLower(quote), "today") {
+	lower := strings.ToLower(quote)
+	if strings.Contains(lower, "today") {
 		return 0
+	}
+	if strings.Contains(lower, "tomorrow") {
+		return 1
 	}
 	if m := quoteDateRe.FindStringSubmatch(quote); m != nil {
 		day, _ := strconv.Atoi(m[2])

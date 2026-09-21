@@ -57,7 +57,15 @@ export default function App() {
     }
   });
   const [visible, setVisible] = useState<Set<Status>>(new Set(STATUS_ORDER));
-  const [selected, setSelected] = useState<Store | null>(null);
+  // Selection is held as a store number and resolved against the current data,
+  // not as a snapshot of the store. A snapshot goes stale the moment the data
+  // refreshes or the product changes, and the panel would then contradict the
+  // dot it was opened from.
+  const [selectedNumber, setSelectedNumber] = useState<string | null>(null);
+  const setSelected = useCallback(
+    (store: Store | null) => setSelectedNumber(store?.storeNumber ?? null),
+    [],
+  );
   const [flyTo, setFlyTo] = useState<{ lng: number; lat: number; zoom: number } | null>(null);
   const [fitVersion, setFitVersion] = useState(0);
   const [resume, setResume] = useState<{ at: number; remaining: number } | null>(null);
@@ -322,6 +330,11 @@ export default function App() {
   }, [variant, familyId]);
 
   const shown = useMemo(() => stores.filter((s) => visible.has(s.status)), [stores, visible]);
+
+  const selected = useMemo(
+    () => (selectedNumber ? (stores.find((s) => s.storeNumber === selectedNumber) ?? null) : null),
+    [stores, selectedNumber],
+  );
 
   const liveSummary = useMemo<Summary>(() => {
     if (!progress) return summary;
