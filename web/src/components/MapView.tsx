@@ -3,13 +3,15 @@ import L from "leaflet";
 import "leaflet.heat";
 import type { Status, Store } from "../lib/api";
 import { STATUS_COLOR } from "../lib/status";
+import { SHEET_PEEK, STORE_SHEET, isSheetLayout } from "../lib/viewport";
 
 interface Props {
   stores: Store[];
   heatmap: boolean;
   selected: Store | null;
   onSelect: (store: Store | null) => void;
-  flyTo: { lng: number; lat: number; zoom: number } | null;
+  /** Without a zoom, the map pans to the point at its current zoom. */
+  flyTo: { lng: number; lat: number; zoom?: number } | null;
   /** Bumped when a sweep finishes, to frame the finished result set once. */
   fitVersion: number;
   /** Place names are a second full-screen layer to composite; some machines
@@ -111,7 +113,7 @@ const PANEL_WIDTH = 372;
  */
 function addLocateControl(map: L.Map) {
   const control = new (L.Control.extend({
-    options: { position: "bottomright" },
+    options: { position: isSheetLayout() ? "topright" : "bottomright" },
     onAdd() {
       const wrap = L.DomUtil.create("div", "leaflet-bar locate-control");
       const link = L.DomUtil.create("a", "", wrap);
@@ -218,8 +220,10 @@ export default function MapView({ stores, heatmap, selected, onSelect, flyTo, fi
       el.style.pointerEvents = "none";
     });
 
-    L.control.zoom({ position: "bottomright" }).addTo(m);
-    L.control.attribution({ position: "bottomright", prefix: false }).addTo(m);
+    // Phones pinch to zoom, and the buttons would sit under the sheet.
+    if (!isSheetLayout()) L.control.zoom({ position: "bottomright" }).addTo(m);
+    // The bottom of a phone's map belongs to the sheet, so its chrome goes up top.
+    L.control.attribution({ position: isSheetLayout() ? "topright" : "bottomright", prefix: false }).addTo(m);
     addLocateControl(m);
 
     // Clicking bare map clears the selection; marker clicks stop propagation.
@@ -379,8 +383,16 @@ export default function MapView({ stores, heatmap, selected, onSelect, flyTo, fi
   }, [showLabels]);
 
   useEffect(() => {
-    if (!flyTo) return;
-    map.current?.flyTo([flyTo.lat, flyTo.lng], flyTo.zoom, { duration: 0.8 });
+    const m = map.current;
+    if (!flyTo || !m) return;
+    const zoom = flyTo.zoom ?? m.getZoom();
+    let target = L.latLng(flyTo.lat, flyTo.lng);
+    // On a phone the store sheet covers the bottom of the map, so centre the
+    // store in the part that is still visible.
+    if (isSheetLayout()) {
+      target = m.unproject(m.project(target, zoom).add([0, STORE_SHEET / 2]), zoom);
+    }
+    m.flyTo(target, zoom, { duration: 0.8 });
   }, [flyTo]);
 
   // Frame the finished sweep, not each streaming batch — an early batch is
@@ -390,10 +402,16 @@ export default function MapView({ stores, heatmap, selected, onSelect, flyTo, fi
     const found = storesRef.current;
     if (!m || !fitVersion || !found.length) return;
 
-    m.fitBounds(L.latLngBounds(found.map((s) => [s.lat, s.lng] as [number, number])), {
+    const sheet = isSheetLayout();
+    // A portrait phone cannot fit Hawaii and the East Coast at the minimum
+    // zoom, so the fit clamps and cuts one coast off. Frame the mainland there
+    // and leave the islands a pan away — unless they are all there is.
+    const mainland = sheet ? found.filter((s) => s.lng > -130) : found;
+    const framed = mainland.length ? mainland : found;
+    m.fitBounds(L.latLngBounds(framed.map((s) => [s.lat, s.lng] as [number, number])), {
       // Leave room for the panel so results are not framed underneath it.
-      paddingTopLeft: [PANEL_WIDTH + 32, 48],
-      paddingBottomRight: [48, 48],
+      paddingTopLeft: sheet ? [20, 56] : [PANEL_WIDTH + 32, 48],
+      paddingBottomRight: sheet ? [20, SHEET_PEEK + 20] : [48, 48],
       maxZoom: 9,
       animate: true,
     });

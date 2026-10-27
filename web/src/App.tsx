@@ -16,6 +16,7 @@ import {
   type Variant,
 } from "./lib/api";
 import { STATUS_ORDER } from "./lib/status";
+import { useSheetLayout } from "./lib/viewport";
 import MapView from "./components/MapView";
 import Controls from "./components/Controls";
 import Legend from "./components/Legend";
@@ -66,7 +67,13 @@ export default function App() {
     (store: Store | null) => setSelectedNumber(store?.storeNumber ?? null),
     [],
   );
-  const [flyTo, setFlyTo] = useState<{ lng: number; lat: number; zoom: number } | null>(null);
+  const [flyTo, setFlyTo] = useState<{ lng: number; lat: number; zoom?: number } | null>(null);
+  // On a phone the panel is a bottom sheet: collapsed it shows what is being
+  // mapped and the counts, so the map keeps most of the screen.
+  const sheet = useSheetLayout();
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const touchY = useRef<number | null>(null);
+  const swiped = useRef(false);
   const [fitVersion, setFitVersion] = useState(0);
   const [resume, setResume] = useState<{ at: number; remaining: number } | null>(null);
   const [rotation, setRotation] = useState<RotationStatus | null>(null);
@@ -357,8 +364,22 @@ export default function App() {
 
   const onStoreSelect = useCallback((store: Store) => {
     setSelected(store);
+    setSheetOpen(false);
     setFlyTo({ lng: store.lng, lat: store.lat, zoom: 8.5 });
   }, []);
+
+  // A tapped dot near the bottom of a phone would end up under the store
+  // sheet, so bring it into the part of the map that is still showing.
+  const onMapSelect = useCallback(
+    (store: Store | null) => {
+      setSelected(store);
+      if (store && sheet) {
+        setSheetOpen(false);
+        setFlyTo({ lng: store.lng, lat: store.lat });
+      }
+    },
+    [sheet],
+  );
 
   // ?perf turns on a frame-rate readout, so "it feels slow" can become a number.
   const showPerf = useMemo(() => new URLSearchParams(window.location.search).has("perf"), []);
@@ -370,19 +391,45 @@ export default function App() {
         stores={shown}
         heatmap={heatmap}
         selected={selected}
-        onSelect={setSelected}
+        onSelect={onMapSelect}
         flyTo={flyTo}
         fitVersion={fitVersion}
         showLabels={showLabels}
       />
 
-      <div className="panel">
-        <header className="brand">
+      <div className={`panel${sheetOpen ? " is-open" : ""}`}>
+        <header
+          className="brand"
+          onClick={() => {
+            if (swiped.current) swiped.current = false;
+            else if (sheet) setSheetOpen((o) => !o);
+          }}
+          onTouchStart={(e) => {
+            touchY.current = e.touches[0].clientY;
+            swiped.current = false;
+          }}
+          onTouchEnd={(e) => {
+            if (touchY.current === null || !sheet) return;
+            const dy = e.changedTouches[0].clientY - touchY.current;
+            touchY.current = null;
+            if (Math.abs(dy) < 24) return;
+            swiped.current = true;
+            setSheetOpen(dy < 0);
+          }}
+        >
           <div className={`brand-mark${scanning ? " is-scanning" : ""}`} aria-hidden />
-          <div>
+          <div className="brand-text">
             <h1>MacScout</h1>
-            <p>Live Apple Store availability, mapped</p>
+            <p>{sheet && variant ? variant.name : "Live Apple Store availability, mapped"}</p>
           </div>
+          <button
+            type="button"
+            className="sheet-toggle"
+            aria-expanded={sheetOpen}
+            aria-label={sheetOpen ? "Show the map" : "Choose a product and see stores"}
+          >
+            {sheetOpen ? "Done" : "Options"}
+          </button>
         </header>
 
         <Controls
